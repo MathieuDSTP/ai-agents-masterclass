@@ -5,74 +5,19 @@ from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
 from typing import Annotated, Literal, Dict
 from dotenv import load_dotenv
-import streamlit as st
-import json
 import os
 
-from langchain_groq import ChatGroq
-from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import ToolMessage, AIMessage
-from langchain_huggingface import HuggingFacePipeline, HuggingFaceEndpoint, ChatHuggingFace
 
-from tools.asana_tools import available_asana_functions
-from tools.google_drive_tools import available_drive_functions
-from tools.vector_db_tools import available_vector_db_functions
+from tools import available_functions
 
 load_dotenv()
 model = os.getenv('LLM_MODEL', 'gpt-4o')
-provider = os.getenv('LLM_PROVIDER', 'auto')
 
-provider_mapping = {
-    "openai": ChatOpenAI,
-    "anthropic": ChatAnthropic,
-    "ollama": ChatOllama,
-    "llama": ChatGroq
-}
-
-model_mapping = {
-    "gpt": ChatOpenAI,
-    "claude": ChatAnthropic,
-    "groq": ChatGroq,
-    "llama": ChatGroq
-}
-
-# Support for HuggingFace with local models coming soon! This function isn't used yet.
-@st.cache_resource
-def get_local_model():
-    return HuggingFaceEndpoint(
-        repo_id=model,
-        task="text-generation",
-        max_new_tokens=1024,
-        do_sample=False
-    )
-
-    # If you want to run the model absolutely locally - VERY resource intense!
-    # return HuggingFacePipeline.from_model_id(
-    #     model_id=model,
-    #     task="text-generation",
-    #     pipeline_kwargs={
-    #         "max_new_tokens": 1024,
-    #         "top_k": 50,
-    #         "temperature": 0.4
-    #     },
-    # )
-
-available_functions = available_asana_functions | available_drive_functions | available_vector_db_functions
 tools = [tool for _, tool in available_functions.items()]
-
-if provider == "auto":
-    for key, chatbot_class in model_mapping.items():
-        if key in model.lower():
-            chatbot = chatbot_class(model=model) if key != "huggingface" else chatbot_class(llm=get_local_model())
-            break
-else:
-    for key, chatbot_class in provider_mapping.items():
-        if key in provider.lower():
-            chatbot = chatbot_class(model=model) if key != "huggingface" else chatbot_class(llm=get_local_model())
-            break
-
+chatbot = ChatOpenAI(model=model, streaming=True) if "gpt" in model.lower() else ChatAnthropic(model=model, streaming=True)
 chatbot_with_tools = chatbot.bind_tools(tools)
 
 ### State
@@ -85,7 +30,7 @@ class GraphState(TypedDict):
     """
     messages: Annotated[list[AnyMessage], add_messages]
 
-def call_model(state: GraphState, config: RunnableConfig) -> Dict[str, AnyMessage]:
+async def call_model(state: GraphState, config: RunnableConfig) -> Dict[str, AnyMessage]:
     """
     Function that calls the model to generate a response.
 
@@ -96,15 +41,14 @@ def call_model(state: GraphState, config: RunnableConfig) -> Dict[str, AnyMessag
         dict: The updated state with a new AI message
     """
     print("---CALL MODEL---")
-
     messages = list(filter(
         lambda m: not isinstance(m, AIMessage) or hasattr(m, "response_metadata") and m.response_metadata, 
         state["messages"]
     ))
 
     # Invoke the chatbot with the binded tools
-    response = chatbot_with_tools.invoke(messages, config)
-    # print("Response from model:", response)
+    response = await chatbot_with_tools.ainvoke(messages, config)
+    print("Response from model:", response)
 
     # We return an object because this will get added to the existing list
     return {"messages": response}
